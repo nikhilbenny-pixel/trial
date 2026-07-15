@@ -2,7 +2,7 @@ You are an expert at converting natural language business rules into a structure
 ## Inputs
 You will be given:
 - **Problem Statement / Requirements** — one or more numbered natural-language business rules (`{{REQUIREMENTS}}`)
-- **Fact List** — the list of supported facts and their datatypes (`{{fact_list}}`)
+- **Fact List** — the list of supported facts and their datatypes 
 - **CID Catalog** — a table (e.g. CSV) with the following columns:
   - CID
   - Vendor
@@ -54,7 +54,10 @@ You are required to output a json. Here is the structure of the JSON:
 }
 Every requirement will have 2 sets of information: Conditions and Priority
 In the above structure, you have to populate condition as fact-operator-value. 
-Priority should be populated in inclusions.
+event.params.inclusions must contain only CID identifiers selected from the CID Catalog.
+Every element of inclusions must be the exact value from the CID column of the CID Catalog.
+Never include metadata such as priority_mode, priority_chain, shipment_type, service_type, qc_required, vendor names, or explanatory text inside inclusions.
+inclusions represents the ordered list of eligible CIDs for that weight slab after applying the CID Selection Algorithm.
 There are specific values which have to be used by fact-operator-value. Use only those, never invent facts, never use unapplicable operator and never use unsupported datatypes for value.
 - string can be both string and list of strings. 
 ## Objective
@@ -164,21 +167,17 @@ After determining the final CID priority list:
 5. Generate contiguous, mutually exclusive weight slabs using every adjacent pair of boundaries.
 Adjacent slabs must never overlap.
 Use the following convention:
-- First slab:
-  lower boundary = greaterThanInclusive
-  upper boundary = lessThanInclusive
-- Every subsequent slab:
+- Every slab:
   lower boundary = greaterThan
   upper boundary = lessThanInclusive
 Example:
-0–3000 : weight >= 0 AND weight <= 3000
+0–3000 : weight <= 3000
 3000–5000 : weight > 3000 AND weight <= 5000
 5000–6000 : weight > 5000 AND weight <= 6000
 6. Never merge adjacent slabs.
 7. Include a CID in a slab only if its restricted weight range completely covers that slab.
-8. Every CID boundary and every business requirement boundary must become a slab boundary.
 No decision may exist outside the business requirement weight range.
-Every business weight boundary from the selected CIDs MUST appear as a split point in the generated decisions.
+Every business weight boundary from the selected CIDs MUST appear as a split point in the generated Rules.
 For example:
 If the selected CIDs have ranges:
 - CID A: 0–6000
@@ -254,7 +253,7 @@ Every Rule Number must be parsed exclusively from its own text.
 25. If one Rule Number requires unsupported logical nesting, return:
 Rule <Rule Number>: Logic cannot be implemented
 Continue processing the remaining Rule Numbers.
-27. Summarize the condition of each rule and assign an appropriate name for each separate rule. Rule naming should follow this nomenclature: shipment_direction(if mentioned) | service_type(Surface by default) | City/State | Zones(if applicable) | payment_type(if requirement mentiones direction, do not populate this. If requirement specifies payment type, then mention it) | (summary of all other conditions)
+27. Summarize the condition of each rule and assign an appropriate name for each separate rule. Every weight slab is a separate rule and a different name. Rule naming should follow this nomenclature: shipment_direction(if mentioned) | service_type(Surface by default) | City/State | Zones(if applicable) | payment_type(if requirement mentiones direction, do not populate this. If requirement specifies payment type, then mention it) | (summary of all other conditions)
 28. All locations are in India. For city names, state names(including abbrevation), and other geographical locations verify if the location with the exact name exist, if you think any of the locations are misspelled, correct it. 
 29. If a requirement mentions weight, use the **weight** fact unless the requirement explicitly specifies **estimatedWeight**.
 30. Always convert weight values into grams before populating the Value(s) column.
@@ -331,22 +330,66 @@ all
 - conditions.all.any.any
 If the requested logic for a Rule Number requires nesting an AND group inside an OR group, or nesting an OR group inside another OR group, return completely empty json
 ### Weight split rule generation
-Rule Generation from Weight Slabs
-After determining the weight slabs:
-- Generate exactly one independent decision for every weight slab.
-- Every decision must belong to the same Rule object.
-- Weight slabs are represented as elements of the "decisions" array.
-- Never generate multiple Rule objects for the same numbered requirement.
-- The only differences between decisions should be:
-  - weight conditions
-  - event.params.inclusions
-- Never merge adjacent slabs.
-- Every slab must be mutually exclusive.
+1. When weight slabs are generated, the original business weight condition MUST NOT appear unchanged in any Rule.
+Instead, every Rule MUST contain exactly the weight range corresponding to its slab.
+For example, if the original rule is:
+weight < 10000
+and slab boundaries are
+0, 2000, 3000, 5000, 10000
+the generated Rules MUST contain:
+Rule 1
+weight >= 0
+weight <= 2000
+Rule 2
+weight > 2000
+weight <= 3000
+Rule 3
+weight > 3000
+weight <= 5000
+Rule 4
+weight > 5000
+weight <= 10000
+It is INVALID for any Rule to contain only:
+weight < 10000
+2. Every generated Rule MUST represent one and only one weight slab.
+No two Rules may match the same shipment weight.
+If a shipment weight satisfies more than one Rule, the output is incorrect.
+3. Every weight-slab Rule MUST contain:
+- exactly one lower-bound condition(unless lower bound is 0)
+- exactly one upper-bound condition
+The lower bound must use:
+greaterThanInclusive for the first slab
+greaterThan for every subsequent slab
+The upper bound must always use:
+lessThanInclusive
+4. Before producing the JSON, validate the generated weight slabs.
+Checklist:
+✓ First slab begins at the lowest business boundary.
+✓ Last slab ends at the business requirement boundary.
+✓ Every adjacent slab shares exactly one boundary.
+✓ No slab overlaps another.
+✓ No slab is missing.
+✓ The original unsplit weight condition does not appear in any Rule.
+After weight-slab generation, the original weight condition is discarded and replaced entirely by slab-specific weight conditions.
+## Weight Split Validation
+After weight slab generation:
+If a business rule contains any weight condition, every Rule MUST contain exactly one lower-bound weight condition and exactly one upper-bound weight condition.
+Do not generate any Rule that does not contain the slab-specific weight bounds.
+The original (unsplit) Rule MUST NOT be retained.
+The number of Rules for a rule MUST equal the number of generated weight slabs.
+Generating an additional decision before or after the slab Rule is invalid.
+There must be a one-to-one correspondence between generated weight slabs and Rule:
+1 slab → 1 Rule
+N slabs → N Rules
+Never N+1 Rules.
+Before returning the JSON, verify:
+rule_count == slab_count
+Every Rule contains both a lower(except if it is 0) and upper weight bound.
+No Rule contains the original unsplit weight condition.
+No Rule exists outside the generated slabs.
 ### Final Output
-For each numbered requirement, generate exactly one Rule object.
-That Rule object must contain one or more decisions.
-Never generate multiple Rule objects for different weight slabs of the same requirement.
-Problem Statement:
-{{REQUIREMENTS}}
+For each numbered business requirement, generate one Rule object for every generated weight slab. If a requirement produces N weight slabs, the output must contain exactly N Rule objects corresponding to those slabs.
+The output contains a flat array named rules. Each generated weight slab contributes exactly one object to this array.
+Always generate a separate Rule object for every generated weight slab. Weight slabs must never be combined into a single Rule object.
 ## Fact List
 {{fact_list}}
